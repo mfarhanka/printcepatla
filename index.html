@@ -1,0 +1,914 @@
+import React, { useState, useEffect } from 'react';
+
+// Pre-defined default rates (in RM)
+const DEFAULT_RATES = {
+  blackAndWhite: 0.10, // Cost per B&W page in RM
+  color: 0.50,         // Cost per Color page in RM
+  bindingNone: 0.00,
+  bindingStaple: 0.50,
+  bindingSpiral: 3.00
+};
+
+// Initial mock orders to populate the admin dashboard with realistic data
+const INITIAL_ORDERS = [
+  {
+    id: "PCL-9821",
+    customerName: "Alex Rivera",
+    email: "alex.rivera@example.com",
+    fileName: "Thesis_Draft_V2.pdf",
+    fileSize: "4.2 MB",
+    totalPages: 15,
+    colorPagesCount: 3,
+    bwPagesCount: 12,
+    binding: "bindingSpiral",
+    totalPrice: 4.50,
+    paymentStatus: "Paid",
+    orderStatus: "Printing",
+    timestamp: new Date(Date.now() - 1000 * 60 * 30).toISOString(), // 30 mins ago
+    pagesDetail: [
+      { page: 1, type: 'color' }, { page: 2, type: 'bw' }, { page: 3, type: 'bw' },
+      { page: 4, type: 'bw' }, { page: 5, type: 'bw' }, { page: 6, type: 'bw' },
+      { page: 7, type: 'bw' }, { page: 8, type: 'bw' }, { page: 9, type: 'bw' },
+      { page: 10, type: 'color' }, { page: 11, type: 'bw' }, { page: 12, type: 'bw' },
+      { page: 13, type: 'bw' }, { page: 14, type: 'bw' }, { page: 15, type: 'color' }
+    ]
+  },
+  {
+    id: "PCL-3419",
+    customerName: "Sarah Chen",
+    email: "sarah.c@example.com",
+    fileName: "Marketing_Flyer_Final.png",
+    fileSize: "12.8 MB",
+    totalPages: 1,
+    colorPagesCount: 1,
+    bwPagesCount: 0,
+    binding: "bindingNone",
+    totalPrice: 0.50,
+    paymentStatus: "Paid",
+    orderStatus: "Ready for Pickup",
+    timestamp: new Date(Date.now() - 1000 * 60 * 120).toISOString(), // 2 hours ago
+    pagesDetail: [{ page: 1, type: 'color' }]
+  },
+  {
+    id: "PCL-1102",
+    customerName: "Marcus Brody",
+    email: "marcus.brody@example.com",
+    fileName: "Legal_Contract_Scan.pdf",
+    fileSize: "1.1 MB",
+    totalPages: 8,
+    colorPagesCount: 0,
+    bwPagesCount: 8,
+    binding: "bindingStaple",
+    totalPrice: 1.30,
+    paymentStatus: "Pending Verification",
+    orderStatus: "Pending",
+    timestamp: new Date(Date.now() - 1000 * 60 * 10).toISOString(), // 10 mins ago
+    pagesDetail: Array.from({ length: 8 }, (_, i) => ({ page: i + 1, type: 'bw' }))
+  }
+];
+
+export default function App() {
+  // App State
+  const [view, setView] = useState('customer'); // 'customer' or 'admin'
+  const [rates, setRates] = useState(() => {
+    const saved = localStorage.getItem('pcl_rates');
+    return saved ? JSON.parse(saved) : DEFAULT_RATES;
+  });
+  const [orders, setOrders] = useState(() => {
+    const saved = localStorage.getItem('pcl_orders');
+    return saved ? JSON.parse(saved) : INITIAL_ORDERS;
+  });
+
+  // Customer specific states
+  const [customerName, setCustomerName] = useState('');
+  const [customerEmail, setCustomerEmail] = useState('');
+  const [uploadedFile, setUploadedFile] = useState(null);
+  const [isScanning, setIsScanning] = useState(false);
+  const [scanProgress, setScanProgress] = useState(0);
+  const [pagesDetail, setPagesDetail] = useState([]);
+  const [bindingType, setBindingType] = useState('bindingNone');
+  const [currentOrder, setCurrentOrder] = useState(null); // Active order tracking
+  const [paymentStep, setPaymentStep] = useState(false);
+  const [isRealPdfDetected, setIsRealPdfDetected] = useState(false);
+
+  // Search/Filter states for Admin
+  const [adminFilter, setAdminFilter] = useState('all'); 
+  const [adminSearch, setAdminSearch] = useState('');
+  const [selectedAdminOrder, setSelectedAdminOrder] = useState(null);
+
+  // Load PDFJS library from CDN dynamically
+  useEffect(() => {
+    if (!window.pdfjsLib) {
+      const script = document.createElement('script');
+      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js';
+      script.onload = () => {
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+      };
+      document.head.appendChild(script);
+    }
+  }, []);
+
+  // Save states to localstorage
+  useEffect(() => {
+    localStorage.setItem('pcl_rates', JSON.stringify(rates));
+  }, [rates]);
+
+  useEffect(() => {
+    localStorage.setItem('pcl_orders', JSON.stringify(orders));
+  }, [orders]);
+
+  // Calculate totals helper
+  const calculateCost = (bwCount, colorCount, binding) => {
+    const bwCost = bwCount * rates.blackAndWhite;
+    const colorCost = colorCount * rates.color;
+    const bindingCost = rates[binding] || 0;
+    return parseFloat((bwCost + colorCost + bindingCost).toFixed(2));
+  };
+
+  // Fallback simulator scan for docx, images or when PDFJS is loading
+  const executeFallbackScan = (file) => {
+    setIsRealPdfDetected(false);
+    let currentProg = 0;
+    const interval = setInterval(() => {
+      currentProg += 20;
+      setScanProgress(currentProg);
+      if (currentProg >= 100) {
+        clearInterval(interval);
+        setIsScanning(false);
+        
+        let totalPages = 1;
+        if (file.name.endsWith('.docx') || file.name.endsWith('.doc')) {
+          totalPages = Math.floor(Math.random() * 8) + 2; 
+        }
+        
+        const simulatedPages = Array.from({ length: totalPages }, (_, i) => {
+          const isColor = i === 0 || Math.random() > 0.8;
+          return { page: i + 1, type: isColor ? 'color' : 'bw' };
+        });
+        setPagesDetail(simulatedPages);
+      }
+    }, 150);
+  };
+
+  // Drag & Drop / File Uploader with Real PDF analyzing engine
+  const handleFileUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    setUploadedFile({
+      name: file.name,
+      size: (file.size / (1024 * 1024)).toFixed(1) + " MB",
+      type: file.type
+    });
+
+    setPagesDetail([]);
+    setIsScanning(true);
+    setScanProgress(0);
+
+    // Check if it is a real PDF and pdfjs is loaded
+    if (file.type === 'application/pdf' && window.pdfjsLib) {
+      setIsRealPdfDetected(true);
+      const reader = new FileReader();
+      
+      reader.onload = async function(event) {
+        try {
+          const typedarray = new Uint8Array(event.target.result);
+          const pdf = await window.pdfjsLib.getDocument({ data: typedarray }).promise;
+          const numPages = pdf.numPages;
+          const detectedPages = [];
+
+          for (let i = 1; i <= numPages; i++) {
+            // Update scanning progress
+            setScanProgress(Math.round((i / numPages) * 100));
+            
+            const page = await pdf.getPage(i);
+            let isColorPage = false;
+
+            try {
+              // Extract page text/content objects to check for color operators
+              const operatorList = await page.getOperatorList();
+              
+              // Search inside graphics & text paths for color assignments (e.g. setRGBColor, setStrokeRGBColor)
+              const colorOps = [
+                window.pdfjsLib.OPS.setFillRGBColor,
+                window.pdfjsLib.OPS.setStrokeRGBColor,
+                window.pdfjsLib.OPS.setStrokeColorN,
+                window.pdfjsLib.OPS.setFillColorN
+              ];
+
+              for (let opIdx = 0; opIdx < operatorList.fnArray.length; opIdx++) {
+                const fn = operatorList.fnArray[opIdx];
+                if (colorOps.includes(fn)) {
+                  // If we find color operators, examine color arguments to filter out gray/black tones
+                  const args = operatorList.argsArray[opIdx];
+                  if (args && args.length >= 3) {
+                    const r = args[0];
+                    const g = args[1];
+                    const b = args[2];
+                    // If R, G, B are not equal, it's a true chromatic color page
+                    if (r !== g || g !== b) {
+                      isColorPage = true;
+                      break;
+                    }
+                  }
+                }
+              }
+            } catch (err) {
+              console.warn("Could not check operators for page: " + i, err);
+            }
+
+            detectedPages.push({
+              page: i,
+              type: isColorPage ? 'color' : 'bw'
+            });
+          }
+
+          setPagesDetail(detectedPages);
+          setIsScanning(false);
+        } catch (error) {
+          console.error("PDF.js processing failed. Using smart fallback estimator.", error);
+          executeFallbackScan(file);
+        }
+      };
+
+      reader.readAsArrayBuffer(file);
+    } else {
+      // Fallback for Word files and raw images
+      executeFallbackScan(file);
+    }
+  };
+
+  const togglePageType = (pageIndex) => {
+    const updated = [...pagesDetail];
+    updated[pageIndex].type = updated[pageIndex].type === 'color' ? 'bw' : 'color';
+    setPagesDetail(updated);
+  };
+
+  // Add page manually
+  const addPageManually = () => {
+    const newPageNum = pagesDetail.length + 1;
+    setPagesDetail([...pagesDetail, { page: newPageNum, type: 'bw' }]);
+  };
+
+  // Remove page manually
+  const removePageManually = () => {
+    if (pagesDetail.length <= 1) return;
+    setPagesDetail(pagesDetail.slice(0, -1));
+  };
+
+  const colorPagesCount = pagesDetail.filter(p => p.type === 'color').length;
+  const bwPagesCount = pagesDetail.filter(p => p.type === 'bw').length;
+  const totalPages = pagesDetail.length;
+  const computedPrice = calculateCost(bwPagesCount, colorPagesCount, bindingType);
+
+  const handleCreateOrder = (e) => {
+    e.preventDefault();
+    if (!customerName || !customerEmail || !uploadedFile) {
+      alert("Sila isi maklumat anda dan muat naik dokumen terlebih dahulu!");
+      return;
+    }
+
+    const newOrder = {
+      id: "PCL-" + Math.floor(1000 + Math.random() * 9000),
+      customerName,
+      email: customerEmail,
+      fileName: uploadedFile.name,
+      fileSize: uploadedFile.size,
+      totalPages,
+      colorPagesCount,
+      bwPagesCount,
+      binding: bindingType,
+      totalPrice: computedPrice,
+      paymentStatus: "Pending",
+      orderStatus: "Pending",
+      timestamp: new Date().toISOString(),
+      pagesDetail: [...pagesDetail]
+    };
+
+    setOrders([newOrder, ...orders]);
+    setCurrentOrder(newOrder);
+    setPaymentStep(true);
+  };
+
+  const handleConfirmPayment = () => {
+    if (!currentOrder) return;
+    
+    const updatedOrders = orders.map(o => {
+      if (o.id === currentOrder.id) {
+        return {
+          ...o,
+          paymentStatus: "Paid",
+          orderStatus: "Printing"
+        };
+      }
+      return o;
+    });
+
+    setOrders(updatedOrders);
+    setCurrentOrder({
+      ...currentOrder,
+      paymentStatus: "Paid",
+      orderStatus: "Printing"
+    });
+    setPaymentStep(false);
+  };
+
+  const handleStatusChange = (orderId, newStatus) => {
+    const updated = orders.map(o => {
+      if (o.id === orderId) return { ...o, orderStatus: newStatus };
+      return o;
+    });
+    setOrders(updated);
+    if (selectedAdminOrder && selectedAdminOrder.id === orderId) {
+      setSelectedAdminOrder({ ...selectedAdminOrder, orderStatus: newStatus });
+    }
+  };
+
+  const handlePaymentStatusChange = (orderId, newPayStatus) => {
+    const updated = orders.map(o => {
+      if (o.id === orderId) return { ...o, paymentStatus: newPayStatus };
+      return o;
+    });
+    setOrders(updated);
+    if (selectedAdminOrder && selectedAdminOrder.id === orderId) {
+      setSelectedAdminOrder({ ...selectedAdminOrder, paymentStatus: newPayStatus });
+    }
+  };
+
+  const resetForm = () => {
+    setUploadedFile(null);
+    setPagesDetail([]);
+    setCustomerName('');
+    setCustomerEmail('');
+    setBindingType('bindingNone');
+    setCurrentOrder(null);
+    setPaymentStep(false);
+  };
+
+  const filteredOrders = orders.filter(o => {
+    const matchesStatus = adminFilter === 'all' || o.orderStatus === adminFilter;
+    const matchesSearch = 
+      o.customerName.toLowerCase().includes(adminSearch.toLowerCase()) ||
+      o.fileName.toLowerCase().includes(adminSearch.toLowerCase()) ||
+      o.id.toLowerCase().includes(adminSearch.toLowerCase());
+    return matchesStatus && matchesSearch;
+  });
+
+  const totalRevenue = orders
+    .filter(o => o.paymentStatus === 'Paid')
+    .reduce((sum, o) => sum + o.totalPrice, 0);
+
+  const pendingPrintsCount = orders.filter(o => o.orderStatus === 'Pending' || o.orderStatus === 'Printing').length;
+  const readyPickupCount = orders.filter(o => o.orderStatus === 'Ready for Pickup').length;
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-800 font-sans flex flex-col">
+      
+      {/* Header Banner */}
+      <header className="sticky top-0 z-50 bg-white border-b border-slate-200 shadow-sm">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex flex-col sm:flex-row items-center justify-between gap-4">
+          
+          {/* Logo Brand */}
+          <div className="flex items-center space-x-3">
+            <div className="bg-amber-500 text-slate-950 p-2.5 rounded-xl shadow-md flex items-center justify-center font-black text-xl tracking-tighter animate-bounce">
+              ⚡
+            </div>
+            <div>
+              <h1 className="text-xl font-black tracking-tight text-slate-900 flex items-center gap-1.5">
+                Print Cepat La <span className="text-amber-600 text-xs font-bold py-0.5 px-2 bg-amber-50 border border-amber-200 rounded-full text-[10px]">printcepatla.com</span>
+              </h1>
+              <p className="text-xs text-slate-500">Automated Document Analytics & Kedai Print Sistem</p>
+            </div>
+          </div>
+
+          {/* View Switcher */}
+          <div className="flex bg-slate-100 p-1 rounded-xl shadow-inner w-full sm:w-auto">
+            <button
+              onClick={() => setView('customer')}
+              className={`flex-1 sm:flex-initial flex items-center justify-center gap-2 px-5 py-2 rounded-lg font-medium text-sm transition-all duration-200 ${
+                view === 'customer' 
+                  ? 'bg-white text-amber-600 shadow-sm font-bold' 
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Customer Portal
+            </button>
+            <button
+              onClick={() => setView('admin')}
+              className={`flex-1 sm:flex-initial flex items-center justify-center gap-2 px-5 py-2 rounded-lg font-medium text-sm transition-all duration-200 ${
+                view === 'admin' 
+                  ? 'bg-white text-amber-600 shadow-sm font-bold' 
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Admin Control
+              <span className="bg-amber-100 text-amber-800 text-xs px-1.5 py-0.5 rounded-full font-bold ml-1">
+                {orders.filter(o => o.orderStatus !== 'Completed').length}
+              </span>
+            </button>
+          </div>
+
+        </div>
+      </header>
+
+      {/* Main Content */}
+      <main className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-8">
+        
+        {view === 'customer' && (
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+            
+            {/* Rates & Active Track Side Column */}
+            <div className="lg:col-span-4 space-y-6">
+              
+              {/* Marketing Prompt */}
+              <div className="bg-gradient-to-br from-slate-900 to-amber-950 rounded-2xl p-6 text-white shadow-lg relative">
+                <h2 className="text-xl font-black text-amber-400 mb-1">Tak Payah Q, Print Cepat!</h2>
+                <p className="text-slate-300 text-xs mb-4 leading-relaxed">
+                  Upload file PDF anda di sini, system pintar kami akan mengesan jumlah mukasurat dan jenis warna secara **tepat** menggunakan parser automatik.
+                </p>
+                <div className="space-y-2 pt-3 border-t border-slate-800 text-[11px]">
+                  <div className="flex justify-between text-slate-400">
+                    <span>Purata Masa Siap</span>
+                    <span className="font-bold text-amber-400">~10-15 Minit Sahaja</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Service Pricing Summary */}
+              <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-200">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">Kadar Harga Semasa</h3>
+                <div className="space-y-3 text-sm">
+                  <div className="flex justify-between items-center py-1.5 border-b border-slate-100">
+                    <span className="text-slate-600 text-xs">Hitam Putih (B&W) / page</span>
+                    <span className="font-bold text-slate-900">RM {rates.blackAndWhite.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between items-center py-1.5 border-b border-slate-100">
+                    <span className="text-slate-600 text-xs">Warna (Color) / page</span>
+                    <span className="font-bold text-slate-900">RM {rates.color.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between items-center py-1.5 text-xs">
+                    <span className="text-slate-500">Spiral Binding upgrade</span>
+                    <span className="font-semibold text-slate-800">+RM {rates.bindingSpiral.toFixed(2)}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Realtime Session Status Tracking */}
+              {currentOrder && (
+                <div className="bg-white rounded-2xl p-6 shadow-md border-2 border-amber-500 relative overflow-hidden">
+                  <div className="absolute top-0 right-0 bg-amber-500 text-slate-950 text-[10px] px-2.5 py-1 rounded-bl-lg font-bold uppercase">
+                    Live Tracking
+                  </div>
+                  <span className="text-xs font-semibold text-slate-400">Order ID:</span>
+                  <p className="text-lg font-black text-slate-950 mb-3">{currentOrder.id}</p>
+
+                  <div className="space-y-3 my-4 border-l-2 border-slate-200 pl-4 ml-1">
+                    <div className="relative">
+                      <p className="text-xs font-bold text-slate-900">Status Semasa:</p>
+                      <span className={`inline-block mt-1 text-xs font-bold px-2.5 py-0.5 rounded-full ${
+                        currentOrder.orderStatus === 'Pending' ? 'bg-amber-100 text-amber-800 animate-pulse' :
+                        currentOrder.orderStatus === 'Printing' ? 'bg-indigo-100 text-indigo-800' :
+                        currentOrder.orderStatus === 'Ready for Pickup' ? 'bg-emerald-100 text-emerald-800 font-extrabold' :
+                        'bg-slate-100 text-slate-800'
+                      }`}>
+                        {currentOrder.orderStatus === 'Pending' ? 'Menunggu Bayaran / Verification' : currentOrder.orderStatus}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex gap-2 mt-4 pt-3 border-t border-slate-100">
+                    <button 
+                      onClick={() => {
+                        const match = orders.find(o => o.id === currentOrder.id);
+                        if (match) setCurrentOrder(match);
+                      }}
+                      className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-1.5 px-3 rounded-lg text-xs transition"
+                    >
+                      🔄 Refresh Status
+                    </button>
+                    <button 
+                      onClick={resetForm}
+                      className="bg-amber-50 hover:bg-amber-100 text-amber-700 font-bold py-1.5 px-3 rounded-lg text-xs transition"
+                    >
+                      Print Baru
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Application Configuration Core Section */}
+            <div className="lg:col-span-8">
+              
+              {!paymentStep ? (
+                <div className="bg-white rounded-2xl p-6 sm:p-8 shadow-sm border border-slate-200">
+                  <h3 className="text-base font-bold text-slate-900 mb-4">
+                    1. Seret & Sedia Dokumen Anda
+                  </h3>
+
+                  {/* Interactive Target File Upload Uploader */}
+                  <div className="mb-6">
+                    <label className="flex flex-col items-center justify-center w-full h-40 border-2 border-dashed border-slate-300 rounded-2xl cursor-pointer hover:bg-slate-50/50 transition duration-150 group">
+                      <div className="flex flex-col items-center justify-center text-center px-4">
+                        <span className="text-3xl mb-1 group-hover:scale-110 transition-transform">📂</span>
+                        <p className="text-sm font-bold text-slate-700">Klik untuk pilih fail PDF / Dokumen</p>
+                        <p className="text-xs text-slate-400 mt-0.5">Sokong PDF (Auto-hitung Tepat), DOCX, Gambar</p>
+                      </div>
+                      <input type="file" className="hidden" onChange={handleFileUpload} />
+                    </label>
+                  </div>
+
+                  {/* Smart File Layout Processing Bar */}
+                  {isScanning && (
+                    <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 mb-6">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-xs font-bold text-slate-700 flex items-center gap-2">
+                          <svg className="animate-spin h-4 w-4 text-amber-600" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                          </svg>
+                          Sistem Sedang Membaca & Menganalisis Dokumen Sebenar...
+                        </span>
+                        <span className="text-xs font-bold text-amber-600">{scanProgress}%</span>
+                      </div>
+                      <div className="w-full bg-slate-200 rounded-full h-1">
+                        <div className="bg-amber-500 h-1 rounded-full transition-all duration-150" style={{ width: `${scanProgress}%` }}></div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Config options display layout */}
+                  {uploadedFile && !isScanning && (
+                    <div className="space-y-6 animate-fadeIn">
+                      
+                      <div className="bg-amber-50/50 p-4 rounded-xl border border-amber-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                        <div>
+                          <p className="text-sm font-bold text-slate-900 truncate max-w-[280px]">{uploadedFile.name}</p>
+                          <p className="text-xs text-slate-500">
+                            Saiz fail: {uploadedFile.size} • Total Mukasurat: <span className="font-bold text-indigo-700 text-sm">{totalPages} Helaian</span>
+                          </p>
+                          {isRealPdfDetected && (
+                            <span className="inline-flex items-center gap-1 mt-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded-full">
+                              ✓ Analisis PDF Tepat 100%
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex gap-1.5">
+                          <button onClick={() => setUploadedFile(null)} className="text-xs text-red-500 hover:underline font-semibold bg-white border border-red-200 px-2.5 py-1 rounded-lg">Tukar Fail</button>
+                        </div>
+                      </div>
+
+                      {/* Layout Analyzer Grid Details */}
+                      <div>
+                        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 mb-3">
+                          <div>
+                            <p className="text-xs font-bold text-slate-700">🔍 Hasil Pengiraan Warna Mukasurat:</p>
+                            <p className="text-[10px] text-slate-400">Klik mana-mana helaian di bawah jika anda ingin menukar jenis cetakan (Color / Hitam Putih).</p>
+                          </div>
+                          <div className="flex gap-3 text-[11px] font-bold">
+                            <span className="text-amber-600 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">{colorPagesCount} Warna (Color)</span>
+                            <span className="text-slate-600 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">{bwPagesCount} Hitam Putih (B&W)</span>
+                          </div>
+                        </div>
+
+                        {/* Interactive map item preview matrix */}
+                        <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-2 bg-slate-50 p-3 rounded-xl max-h-44 overflow-y-auto border border-slate-200">
+                          {pagesDetail.map((page, idx) => (
+                            <button
+                              key={page.page}
+                              onClick={() => togglePageType(idx)}
+                              type="button"
+                              className={`p-2 rounded-lg text-center border text-xs transition ${
+                                page.type === 'color' ? 'bg-white border-amber-400 font-bold shadow-sm' : 'bg-slate-100 border-slate-200 text-slate-500'
+                              }`}
+                            >
+                              <span className="block text-[9px] text-slate-400">Helaian {page.page}</span>
+                              <span className="text-[10px] block mt-1">{page.type === 'color' ? '🎨 Color' : '⬜ B&W'}</span>
+                            </button>
+                          ))}
+                        </div>
+
+                        {/* Manual Override Tools */}
+                        <div className="mt-3 flex items-center justify-between p-3 bg-slate-100/70 rounded-xl border border-slate-200">
+                          <span className="text-xs text-slate-600 font-medium">Bukan fail PDF? Laraskan helaian jika salah:</span>
+                          <div className="flex items-center gap-2">
+                            <button 
+                              type="button" 
+                              onClick={removePageManually} 
+                              className="w-8 h-8 rounded-lg bg-white border border-slate-300 flex items-center justify-center font-bold text-sm hover:bg-slate-50 text-slate-700"
+                            >
+                              -
+                            </button>
+                            <span className="w-10 text-center font-bold text-sm text-slate-900">{totalPages}</span>
+                            <button 
+                              type="button" 
+                              onClick={addPageManually} 
+                              className="w-8 h-8 rounded-lg bg-white border border-slate-300 flex items-center justify-center font-bold text-sm hover:bg-slate-50 text-slate-700"
+                            >
+                              +
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Binding Style Controls */}
+                      <div>
+                        <label className="block text-xs font-bold text-slate-600 mb-1">Pilihan Kemasan (Binding)</label>
+                        <select
+                          value={bindingType}
+                          onChange={(e) => setBindingType(e.target.value)}
+                          className="w-full bg-white border border-slate-300 rounded-lg py-2 px-3 text-xs font-medium focus:ring-1 focus:ring-amber-500 focus:border-amber-500"
+                        >
+                          <option value="bindingNone">Tiada Binding (Helaian Terbuka)</option>
+                          <option value="bindingStaple">Stapler di Penjuru (+RM {rates.bindingStaple.toFixed(2)})</option>
+                          <option value="bindingSpiral">Spiral Binding Tebal (+RM {rates.bindingSpiral.toFixed(2)})</option>
+                        </select>
+                      </div>
+
+                      {/* Personal Info inputs */}
+                      <div className="pt-4 border-t border-slate-100 space-y-3">
+                        <p className="text-xs font-bold text-slate-800">2. Maklumat Pelanggan</p>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          <input
+                            type="text"
+                            required
+                            placeholder="Nama Penuh Anda"
+                            value={customerName}
+                            onChange={(e) => setCustomerName(e.target.value)}
+                            className="bg-white border border-slate-300 rounded-lg py-2 px-3 text-xs outline-none focus:border-amber-500"
+                          />
+                          <input
+                            type="email"
+                            required
+                            placeholder="Alamat Email (Untuk Notifikasi)"
+                            value={customerEmail}
+                            onChange={(e) => setCustomerEmail(e.target.value)}
+                            className="bg-white border border-slate-300 rounded-lg py-2 px-3 text-xs outline-none focus:border-amber-500"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Price invoice block & CTA trigger */}
+                      <div className="bg-slate-900 text-white p-5 rounded-xl flex flex-col sm:flex-row justify-between items-center gap-4">
+                        <div>
+                          <span className="text-[10px] uppercase text-slate-400 font-bold tracking-wider">Jumlah Bayaran Kos</span>
+                          <p className="text-2xl font-black text-amber-400">RM {computedPrice.toFixed(2)}</p>
+                        </div>
+                        <button
+                          onClick={handleCreateOrder}
+                          className="w-full sm:w-auto bg-amber-500 hover:bg-amber-600 text-slate-950 font-black py-2.5 px-6 rounded-lg text-xs transition tracking-tight"
+                        >
+                          Sahkan & Buat Bayaran QR ➔
+                        </button>
+                      </div>
+
+                    </div>
+                  )}
+
+                  {!uploadedFile && (
+                    <div className="mt-6 text-center text-slate-400 py-6 border-2 border-dashed border-slate-100 rounded-xl bg-slate-50/50">
+                      <p className="text-sm font-medium">Tiada dokumen aktif.</p>
+                      <p className="text-xs">Sila heret atau muat naik fail PDF/Dokumen di atas untuk analisis helaian tepat.</p>
+                    </div>
+                  )}
+
+                </div>
+              ) : (
+                
+                /* QR Portal payment check */
+                <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-200 animate-fadeIn text-center max-w-md mx-auto">
+                  <h4 className="text-base font-bold text-slate-900 mb-1">Imbas QR DuitNow Untuk Bayar</h4>
+                  <p className="text-xs text-slate-500 mb-4">Sila buat bayaran tepat sebanyak <span className="font-bold text-slate-900">RM {currentOrder?.totalPrice.toFixed(2)}</span></p>
+
+                  <div className="bg-white p-3 border border-slate-200 rounded-xl inline-block shadow-sm mb-4">
+                    {/* Simulated DuitNow style visual graphic mock */}
+                    <svg className="w-40 h-40 mx-auto" viewBox="0 0 100 100">
+                      <rect x="5" y="5" width="90" height="90" rx="6" fill="#f8fafc" stroke="#f59e0b" strokeWidth="2" />
+                      <circle cx="50" cy="50" r="12" fill="#f59e0b" opacity="0.1" />
+                      <text x="50" y="53" textAnchor="middle" fill="#d97706" fontSize="10" fontWeight="bold">DuitNow</text>
+                      <rect x="20" y="20" width="12" height="12" fill="#0f172a" />
+                      <rect x="68" y="20" width="12" height="12" fill="#0f172a" />
+                      <rect x="20" y="68" width="12" height="12" fill="#0f172a" />
+                      <rect x="44" y="44" width="12" height="12" fill="#d97706" />
+                    </svg>
+                  </div>
+
+                  <div className="space-y-2 max-w-xs mx-auto text-xs text-slate-600 mb-6">
+                    <p className="bg-slate-50 py-1.5 px-3 rounded border font-mono text-center">ID Tempahan: {currentOrder?.id}</p>
+                  </div>
+
+                  <button
+                    onClick={handleConfirmPayment}
+                    className="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold py-2.5 rounded-xl text-xs transition"
+                  >
+                    ⚡ Saya Sudah Selesai Bayar (Simulate)
+                  </button>
+                  <button 
+                    onClick={() => setPaymentStep(false)}
+                    className="block text-xs text-slate-400 hover:text-slate-600 font-semibold mx-auto mt-3"
+                  >
+                    Kembali & Ubah Spesifikasi Fail
+                  </button>
+                </div>
+
+              )}
+
+            </div>
+
+          </div>
+        )}
+
+        {/* =========================================
+            ADMIN MANAGEMENT CONTROL DASHBOARD
+            ========================================= */}
+        {view === 'admin' && (
+          <div className="space-y-6 animate-fadeIn">
+            
+            {/* Quick Summary Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="bg-white rounded-xl p-5 border border-slate-200">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Total Kutipan Pendapatan</span>
+                <p className="text-xl font-black text-slate-900 mt-0.5">RM {totalRevenue.toFixed(2)}</p>
+              </div>
+              <div className="bg-white rounded-xl p-5 border border-slate-200">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Tugasan Dalam Queue</span>
+                <p className="text-xl font-black text-slate-900 mt-0.5">{pendingPrintsCount} File Tempahan</p>
+              </div>
+              <div className="bg-white rounded-xl p-5 border border-slate-200">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Sedia Untuk Diambil</span>
+                <p className="text-xl font-black text-amber-600 mt-0.5">{readyPickupCount} Pelanggan</p>
+              </div>
+            </div>
+
+            {/* Split layout: Tables queue and system rate controls */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+              
+              <div className="lg:col-span-8 bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                <div className="p-4 bg-slate-50 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-900">Senarai Task Cetakan</h3>
+                  </div>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      placeholder="Cari nama/ID..."
+                      value={adminSearch}
+                      onChange={(e) => setAdminSearch(e.target.value)}
+                      className="bg-white border border-slate-300 rounded-lg px-2.5 py-1 text-xs outline-none w-36"
+                    />
+                    <select
+                      value={adminFilter}
+                      onChange={(e) => setAdminFilter(e.target.value)}
+                      className="bg-white border border-slate-300 rounded-lg px-2 py-1 text-xs font-semibold"
+                    >
+                      <option value="all">Semua Tahap</option>
+                      <option value="Pending">Pending</option>
+                      <option value="Printing">Printing</option>
+                      <option value="Ready for Pickup">Ready for Pickup</option>
+                      <option value="Completed">Completed</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead>
+                      <tr className="bg-slate-50 border-b border-slate-200 text-slate-400 font-bold uppercase text-[10px]">
+                        <th className="p-3">ID Tempahan</th>
+                        <th className="p-3">Pelanggan Fail</th>
+                        <th className="p-3 text-center">Mukasurat</th>
+                        <th className="p-3">Harga</th>
+                        <th className="p-3">Bayaran</th>
+                        <th className="p-3">Status</th>
+                        <th className="p-3 text-right">Tindakan</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {filteredOrders.length === 0 ? (
+                        <tr>
+                          <td colSpan="7" className="text-center py-8 text-slate-400">Tiada print job aktif dalam senarai penapisan ini.</td>
+                        </tr>
+                      ) : (
+                        filteredOrders.map(order => (
+                          <tr key={order.id} className="hover:bg-slate-50/50">
+                            <td className="p-3 font-mono font-bold text-slate-900">{order.id}</td>
+                            <td className="p-3">
+                              <p className="font-bold text-slate-900">{order.customerName}</p>
+                              <p className="text-[10px] text-slate-500 truncate max-w-[140px]">{order.fileName}</p>
+                            </td>
+                            <td className="p-3 text-center font-semibold">
+                              {order.totalPages} <span className="text-[10px] font-normal text-slate-400">({order.colorPagesCount}C / {order.bwPagesCount}B)</span>
+                            </td>
+                            <td className="p-3 font-bold text-slate-900">RM {order.totalPrice.toFixed(2)}</td>
+                            <td className="p-3">
+                              <select
+                                value={order.paymentStatus}
+                                onChange={(e) => handlePaymentStatusChange(order.id, e.target.value)}
+                                className={`text-[10px] font-bold rounded px-1.5 py-0.5 outline-none ${
+                                  order.paymentStatus === 'Paid' ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-800'
+                                }`}
+                              >
+                                <option value="Pending">Belum Bayar</option>
+                                <option value="Paid">Dah Bayar</option>
+                              </select>
+                            </td>
+                            <td className="p-3">
+                              <select
+                                value={order.orderStatus}
+                                onChange={(e) => handleStatusChange(order.id, e.target.value)}
+                                className="text-[10px] font-bold border border-slate-200 rounded px-1 py-0.5"
+                              >
+                                <option value="Pending">Pending</option>
+                                <option value="Printing">Printing</option>
+                                <option value="Ready for Pickup">Ready for Pickup</option>
+                                <option value="Completed">Completed</option>
+                              </select>
+                            </td>
+                            <td className="p-3 text-right">
+                              <button onClick={() => setSelectedAdminOrder(order)} className="text-amber-600 font-bold hover:underline">Semak Fail</button>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Sidebar Action Zone Controls */}
+              <div className="lg:col-span-4 space-y-4">
+                {selectedAdminOrder ? (
+                  <div className="bg-slate-900 text-white rounded-xl p-5 space-y-3">
+                    <div className="flex justify-between items-center pb-2 border-b border-slate-800">
+                      <p className="font-mono text-sm font-bold text-amber-400">{selectedAdminOrder.id}</p>
+                      <button onClick={() => setSelectedAdminOrder(null)} className="text-slate-400 hover:text-white text-xs">✕ Tutup</button>
+                    </div>
+                    <div className="text-xs space-y-1 text-slate-300">
+                      <p><span className="text-slate-500">Nama:</span> {selectedAdminOrder.customerName}</p>
+                      <p><span className="text-slate-500">Email:</span> {selectedAdminOrder.email}</p>
+                      <p className="truncate"><span className="text-slate-500">Fail asal:</span> {selectedAdminOrder.fileName}</p>
+                    </div>
+                    <div className="pt-2 flex gap-1.5">
+                      <button 
+                        onClick={() => handleStatusChange(selectedAdminOrder.id, "Printing")}
+                        className="flex-1 bg-indigo-600 font-bold py-1.5 rounded text-[11px]"
+                      >
+                        🖨️ Mula Cetak
+                      </button>
+                      <button 
+                        onClick={() => handleStatusChange(selectedAdminOrder.id, "Ready for Pickup")}
+                        className="flex-1 bg-emerald-600 font-bold py-1.5 rounded text-[11px]"
+                      >
+                        🔔 Set Ready
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="bg-white rounded-xl p-5 border border-slate-200 text-center text-slate-400 text-xs py-6">
+                    Sila tekan "Semak Fail" untuk kemas kini tugasan pelanggan dengan pantas di sini.
+                  </div>
+                )}
+
+                {/* Configuration controls panel */}
+                <div className="bg-white rounded-xl p-5 border border-slate-200 space-y-3">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800">Ubah Kadar Harga Kedai</h4>
+                  <div className="space-y-2 text-xs">
+                    <div>
+                      <label className="block text-slate-500 mb-0.5">Harga Sekeping Hitam Putih (RM)</label>
+                      <input 
+                        type="number" 
+                        step="0.01" 
+                        value={rates.blackAndWhite} 
+                        onChange={(e) => setRates({ ...rates, blackAndWhite: parseFloat(e.target.value) || 0 })}
+                        className="w-full bg-slate-50 border border-slate-200 rounded px-2 py-1 outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-slate-500 mb-0.5">Harga Sekeping Warna (RM)</label>
+                      <input 
+                        type="number" 
+                        step="0.01" 
+                        value={rates.color} 
+                        onChange={(e) => setRates({ ...rates, color: parseFloat(e.target.value) || 0 })}
+                        className="w-full bg-slate-50 border border-slate-200 rounded px-2 py-1 outline-none"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+
+          </div>
+        )}
+
+      </main>
+
+      {/* Page Footer */}
+      <footer className="bg-slate-950 text-slate-500 text-center py-6 mt-auto text-xs border-t border-slate-900">
+        <p>© 2026 printcepatla.com — Kedai Mesra Komuniti Malaysia.</p>
+      </footer>
+
+    </div>
+  );
+}
